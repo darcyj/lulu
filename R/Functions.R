@@ -33,6 +33,12 @@
 #' @param minimum_relative_cooccurence minimum co-occurrence rate – i.e. the
 #'   lower rate of occurrence of the potential error explained by co-occurrence
 #'   with the potential parent for considering error state.
+#' @param log_name name for log file (default is "auto"). If "auto", a name will
+#'   be generated starting with "lulu.log_" and ending in the system date and time.
+#'   If "none", no log will be written. Any other value will cause a log to be written
+#'   under that name. 
+#' @param output_type the type of output desired. If "otutable", default list output
+#'  will be overridden, and only an otutable (class data.frame) will be returned.
 #' @return Function \code{lulu} returns a list of results based on the input OTU
 #'   table and match list.
 #'   \enumerate{
@@ -60,7 +66,7 @@
 #'   Producing the match list requires a file with all the OTU sequences (centroids) - e.g. \code{OTUcentroids.fasta}. The matchlist can be produced by mapping all OTUs against each other with an external algorithm like VSEARCH or BLASTN. In \code{VSEARCH} a matchlist can be produced e.g. with the following command: \code{vsearch --usearch_global OTUcentroids.fasta --db OTUcentroids.fasta --strand plus --self --id .80 --iddef 1 --userout matchlist.txt --userfields query+target+id --maxaccepts 0 --query_cov .9 --maxhits 10}. In \code{BLASTN} a matchlist can be produces e.g. with the following commands. First we produce a blast-database from the fasta file: \code{makeblastdb -in OTUcentroids.fasta -parse_seqids -dbtype nucl}, then we match the centroids against that database: \code{blastn -db OTUcentoids.fasta -num_threads 10 -outfmt'6 qseqid sseqid pident' -out matchlist.txt -qcov_hsp_perc .90 -perc_identity .84 -query OTUcentroids.fasta}
 #' @author Tobias Guldberg Frøslev
 #' @export
-lulu <- function(otutable, matchlist, minimum_ratio_type = "min", minimum_ratio = 1, minimum_match = 84, minimum_relative_cooccurence = 0.95) {
+lulu <- function (otutable, matchlist, minimum_ratio_type = "min", minimum_ratio = 1, minimum_match = 84, minimum_relative_cooccurence = 0.95, log_name="auto", output_type="full"){
   require(dplyr)
   start.time <- Sys.time()
   colnames(matchlist) <- c("OTUid", "hit", "match")
@@ -75,117 +81,127 @@ lulu <- function(otutable, matchlist, minimum_ratio_type = "min", minimum_ratio 
 
   # calculating spread (number of presences (samples with 1+ read) pr OTU)
   statistics_table$spread <- rowSums(otutable > 0)
-  statistics_table <- statistics_table[with(statistics_table,
-                                            order(spread,
-                                                  total,
-                                                  decreasing = TRUE)), ]
-  otutable <- otutable[match(row.names(statistics_table),
-                             row.names(otutable)), ]
-
-  statistics_table$parent_id <- "NA"
-  log_con <- file(paste0("lulu.log_", format(start.time, "%Y%m%d_%H%M%S")),
-                  open = "a")
-  for (line in seq(1:nrow(statistics_table))) {
-    # make a progressline
-    print(paste0("progress: ",
-                 round(((line/nrow(statistics_table)) * 100), 0), "%"))
-    potential_parent_id <- row.names(otutable)[line]
-    cat(paste0("\n", "####processing: ", potential_parent_id, " #####"),
-        file = log_con)
-    daughter_samples <- otutable[line, ]
-    hits <- matchlist[which(matchlist$OTUid == potential_parent_id &
-                              matchlist$match > minimum_match), "hit"]
-    cat(paste0("\n", "---hits: ", hits), file = log_con)
-    last_relevant_entry <- sum(statistics_table$spread >=
-                                 statistics_table$spread[line])
-    potential_parents <- which(row.names(otutable)[1:last_relevant_entry]
-                               %in% hits)
-    cat(paste0("\n", "---potential parent: ",
-               row.names(statistics_table)[potential_parents]), file = log_con)
-    success <- FALSE
-    if (length(potential_parents) > 0) {
-      for (line2 in potential_parents) {
-        cat(paste0("\n", "------checking: ", row.names(statistics_table)[line2]),
-            file = log_con)
-        if (!success) {
-          relative_cooccurence <-
-            sum((daughter_samples[otutable[line2, ] > 0]) > 0)/
-            sum(daughter_samples > 0)
-          cat(paste0("\n", "------relative cooccurence: ",
-                     relative_cooccurence), file = log_con)
-          if (relative_cooccurence >= minimum_relative_cooccurence) {
-            cat(paste0(" which is sufficient!"), file = log_con)
-            if (minimum_ratio_type == "avg") {
-              relative_abundance <-
-                mean(otutable[line2, ][daughter_samples > 0]/
-                       daughter_samples[daughter_samples > 0])
-              cat(paste0("\n", "------mean avg abundance: ",
-                         relative_abundance), file = log_con)
-            } else {
-              relative_abundance <-
-                min(otutable[line2, ][daughter_samples > 0]/
-                      daughter_samples[daughter_samples > 0])
-              cat(paste0("\n", "------min avg abundance: ",
-                         relative_abundance), file = log_con)
-            }
-            if (relative_abundance > minimum_ratio) {
-              cat(paste0(" which is OK!"), file = log_con)
-              if (line2 < line) {
-                statistics_table$parent_id[line] <-
-                  statistics_table[row.names(otutable)[line2],"parent_id"]
-                cat(paste0("\n", "SETTING ",
-                           potential_parent_id, " to be an ERROR of ",
-                           (statistics_table[row.names(otutable)[line2],
-                                             "parent_id"]), "\n"),
-                    file = log_con)
-              } else {
-                statistics_table$parent_id[line] <- row.names(otutable)[line2]
-                cat(paste0("\n", "SETTING ", potential_parent_id,
-                           " to be an ERROR of ", (row.names(otutable)[line2]),
-                           "\n"), file = log_con)
-              }
-              success <- TRUE
-            }
-          }
-        }
-      }
-    }
-    if (!success) {
-      statistics_table$parent_id[line] <- row.names(statistics_table)[line]
-      cat(paste0("\n", "No parent found!", "\n"), file = log_con)
+  statistics_table <- statistics_table[with(statistics_table, order(spread, total, decreasing = TRUE)), ]
+  otutable <- otutable[match(row.names(statistics_table), row.names(otutable)), ]
+  # add parent_id column to statistics_table, it will store result for simplification
+  
+  # open log for writing, use new argument I added for log name. Default ("auto") preserves original functionality.
+  logTF <- TRUE
+  if(log_name == "auto"){
+    log_fp <- paste0("lulu.log_", format(start.time, "%Y%m%d_%H%M%S"))
+  }else if(log_name=="none"){
+    logTF <- FALSE
+  }else{
+    log_fp <- log_name
+  }
+  if(logTF == TRUE){ log_con <- file(log_fp, open="a") }
+  
+  # define function for writing to log. This tidies up the code a bit, and enables user to turn off log.
+  write2log <- function(text, writeTF=logTF, con=log_con){
+    if(writeTF == TRUE){
+      cat(text, file=con)
     }
   }
+  
+  # start up progress bar
+  pb <- txtProgressBar(min=0, max=nrow(statistics_table), style=3)
 
-  close(log_con)
+  # for each otu (in statistics_table / otu_table), 
+  # there was an extra "seq" in this line, it's not necessary, I removed it.
+  for (line in 1:nrow(statistics_table)) {
+      # progress bar will be updated at the end of the loop.
+      potential_parent_id <- row.names(otutable)[line]
+      write2log(paste0("\n", "#### Processing: ", potential_parent_id, " #####"))
+      daughter_samples <- otutable[line, ]
+      hits <- matchlist[which(matchlist$OTUid == potential_parent_id &  matchlist$match > minimum_match), "hit"]
+      write2log(paste0("\n", "---hits: ", hits))
+      last_relevant_entry <- sum(statistics_table$spread >= statistics_table$spread[line])
+      potential_parents <- which(row.names(otutable)[1:last_relevant_entry] %in% hits)
+      write2log(paste0("\n", "---potential parent: ", row.names(statistics_table)[potential_parents]))
+      
+      success <- FALSE
+      if (length(potential_parents) > 0) {
+          for (line2 in potential_parents) {
+              write2log(paste0("\n", "------checking: ", row.names(statistics_table)[line2]))
+              if (!success) {
+                relative_cooccurence <- sum((daughter_samples[otutable[line2, ] > 0]) > 0)/sum(daughter_samples > 0)
+                write2log(paste0("\n", "------relative cooccurence: ", relative_cooccurence))
+                if (relative_cooccurence >= minimum_relative_cooccurence) {
+                  write2log(paste0(" which is sufficient!"))
+                  if (minimum_ratio_type == "avg") {
+                    relative_abundance <- mean(otutable[line2, ][daughter_samples > 0]/daughter_samples[daughter_samples > 0])
+                    write2log(paste0("\n", "------mean avg abundance: ", relative_abundance))
+                  } else {
+                    relative_abundance <- min(otutable[line2, ][daughter_samples > 0]/daughter_samples[daughter_samples > 0])
+                    write2log(paste0("\n", "------min avg abundance: ", relative_abundance))
+                  }
+                  if (relative_abundance > minimum_ratio) {
+                    write2log(paste0(" which is OK!"))
+                    if (line2 < line) {
+                      statistics_table$parent_id[line] <- statistics_table[row.names(otutable)[line2], "parent_id"]
+                      write2log(paste0("\n", "SETTING ", potential_parent_id, " to be an ERROR of ", (statistics_table[row.names(otutable)[line2], "parent_id"]), "\n"))
+                    } else {
+                      statistics_table$parent_id[line] <- row.names(otutable)[line2]
+                      write2log(paste0("\n", "SETTING ", potential_parent_id, " to be an ERROR of ", (row.names(otutable)[line2]), "\n"))
+                    }
+                    success <- TRUE
+                  }
+                }
+              }
+          }
+      }
+      if (!success) {
+          statistics_table$parent_id[line] <- row.names(statistics_table)[line]
+          write2log(paste0("\n", "No parent found!", "\n"))
+      }
+      
+      # update progress bar
+      setTxtProgressBar(pb, line)
+  }
+
+
   total_abundances <- rowSums(otutable)
   curation_table <- cbind(nOTUid = statistics_table$parent_id, otutable)
   statistics_table$curated <- "merged"
   curate_index <- row.names(statistics_table) == statistics_table$parent_id
   statistics_table$curated[curate_index] <- "parent"
-  statistics_table <- transform(statistics_table,
-                                rank = ave(total,FUN = function(x)
-                                  rank(-x, ties.method = "first")))
-  curation_table <- as.data.frame(curation_table %>%
-                                    group_by(nOTUid) %>%
-                                    summarise_each(funs(sum)))
+  statistics_table <- transform(statistics_table, rank = ave(total, FUN = function(x) rank(-x, ties.method = "first")))
+
+  # changed the following line to avoid deprecation error message
+  # curation_table2 <- as.data.frame(curation_table %>% group_by(nOTUid) %>% summarise_each(funs(sum)))
+  curation_table <- as.data.frame(curation_table %>% group_by(nOTUid) %>% summarise_all(funs(sum)))
+  # quick check to see if they actually do the same thing, made the summarize_each one "curation_table_old"
+  # all(curation_table_old == curation_table)
+  # it's TRUE, we're good here
+                                                             
   row.names(curation_table) <- as.character(curation_table$nOTUid)
+  
+  # remove redundant name column from curation_table
   curation_table <- curation_table[, -1]
+  
   curated_otus <- names(table(statistics_table$parent_id))
   curated_count <- length(curated_otus)
   discarded_otus <- setdiff(row.names(statistics_table), curated_otus)
   discarded_count <- length(discarded_otus)
   end.time <- Sys.time()
   time.taken <- end.time - start.time
-  result <- list(curated_table = curation_table,
-                 curated_count = curated_count,
-                 curated_otus = curated_otus,
-                 discarded_count = discarded_count,
-                 discarded_otus = discarded_otus,
-                 runtime = time.taken,
-                 minimum_match = minimum_match,
-                 minimum_relative_cooccurence = minimum_relative_cooccurence,
-                 otu_map = statistics_table,
-                 original_table = otutable)
+  
+  # I made it so the result can be the bare-minimum output, the curated OTU table. 
+  # This is useful if your output is HUGE - it speeds things up a bit.
+  if(output_type == "otutable"){
+      result <- curation_table
+  }else{
+      result <- list(curated_table = curation_table, curated_count = curated_count, 
+          curated_otus = curated_otus, discarded_count = discarded_count, 
+          discarded_otus = discarded_otus, runtime = time.taken, 
+          minimum_match = minimum_match, minimum_relative_cooccurence = minimum_relative_cooccurence, 
+          otu_map = statistics_table, original_table = otutable)
+  }
+  
+  # write runtime to log, then close it
+  time_in_mins <- round(as.numeric(time.taken, units="mins"), 4)
+  write2log(paste0("\n", "#### FINISHED; took ", time_in_mins, " minutes."))
+  close(log_con)
 
   return(result)
 }
